@@ -16,7 +16,7 @@ from oasis.problems import *
 from oasis.problems.NSfracStep import *
 from oasis.common import * #added to be able to use io.py functions
 from dolfin import *
-import numpy as np 
+import numpy as np
 import sys
 from ufl import dot, grad
 from dolfin import project, Function, XDMFFile
@@ -31,10 +31,11 @@ def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
         Re=1,
         period=1,
         dt=0.001, 
-        inlet_diameter = 0.0297, #[m]
+        inlet_area = 7.55527*1e-4, #[m2]
+        inlet_centroid = [-0.216742, 0.161571, -0.29505], #center of mass [m]
         mesh_path='/scratch/s/steinman/ranbar/Torino/Coronary/mesh/',
         mesh_name='MildStenosis_mesh.xml',
-        BC_file_name='MildStenosis_BCnodesFacets.xml',
+        BC_file='MildStenosis_BCnodesFacets.xml',
         save_step=10, #10,
         folder='results/',
 		linear_solver="mumps",
@@ -46,12 +47,12 @@ def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
 
     # Calculate inflow velocity profile
-    # inflow_Vprof = get_inflow_Vprofile(NS_parameters['inlet_diameter'])
+    inflow_Vprof = get_inflow_Vprofile(NS_parameters['inlet_centroid'], NS_parameters['inlet_area'],)
     # Update this in NS parameters and expression
-    #NS_expressions.update(dict(u_in= inflow_Vprof)) 
+    NS_expressions.update(dict(u_in= inflow_Vprof)) 
     
     # Placeholder for u_in
-    NS_expressions["u_in"] = Constant(0.0) 
+    #NS_expressions["u_in"] = Constant(0.0) 
 
 
 
@@ -69,12 +70,12 @@ def mesh(mesh_name, mesh_path, **NS_namespace):
 
     return mesh
 
-
-def get_inlet_params(mesh, sub_domains, inlet_tag=2, **NS_namespace):
-    """
-    Compute the centroid and diameter of the inlet by integrating and averaging the coordinates of every vertex on inlet.
-    mesh coords are assumed in [cm]; returns (center, diameter) in [m].
-    """
+"""
+def get_inlet_params(mesh_path, inlet_vtp_file, **NS_namespace):
+    
+    #Compute the centroid (center of mass) and area of the inlet by reading the inlet.vtp patch.
+    #mesh coords are assumed in [cm]; returns (center, area) in [m] and [m2].
+   
     # Collect all unique vertex‐indices on inlet facets
     inlet_points = set()
     for facet in facets(mesh):
@@ -86,6 +87,7 @@ def get_inlet_params(mesh, sub_domains, inlet_tag=2, **NS_namespace):
     coords        = mesh.coordinates()*0.01           # (N_points × 3) array  -> converts from [cm] to [m]
     inlet_coords  = coords[list(inlet_points), :]     # (#inlet_points × 3)
     center        = inlet_coords.mean(axis=0)         # length‑3 (gdim) array
+    
 
     # center = (x_c, y_c, z_c) in [meters]
     #center = center_cm * 0.01
@@ -94,17 +96,19 @@ def get_inlet_params(mesh, sub_domains, inlet_tag=2, **NS_namespace):
     radii        = np.linalg.norm(inlet_coords - center, axis=1)
     diameter     = 2.0 * radii.max()
     
-    print('Inlet center [m]:', center)
-    print('Inlet diameter [m]:', diameter)
 
-    return tuple(center), float(diameter)                  
+    print('Inlet center [m]:', center)
+    
+    return center
+
+"""                
 
     
 
 # ---------------------------- Boundary Conditions -----------------------------#
 
 
-def create_bcs(V, Q, mesh, mesh_path, BC_file_name, **NS_namespace):
+def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     """
     Use the get_sub_domains() to obtain boundaries and then apply Dirichlet BCs on them as:
       • walls  (tag 1)   → no slip
@@ -115,13 +119,13 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file_name, **NS_namespace):
     inlet_tag  = 2
     outlet_tag = 3
 
-    sub_domains = get_subdomains(mesh, mesh_path, BC_file_name, **NS_namespace)
+    sub_domains = get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
     
-    inlet_diameter = NS_parameters['inlet_diameter']
-    inflow_Vprof = get_inflow_Vprofile(mesh, sub_domains)
+    #inlet_diameter = NS_parameters['inlet_diameter']
+    #inflow_Vprof = get_inflow_Vprofile(mesh, sub_domains)
     
     # Update these in NS parameters and expression
-    NS_expressions.update(dict(u_in= inflow_Vprof)) 
+    #NS_expressions.update(dict(u_in= inflow_Vprof)) 
 
     # Velocity BCs
     bcu = [[],[],[]]
@@ -155,30 +159,31 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file_name, **NS_namespace):
 
 
 # Extract subdomains 
-def get_subdomains(mesh, mesh_path, BC_file_name, **NS_namespace):
+def get_subdomains(mesh, mesh_path, BC_file, **NS_namespace):
     """
     Load the facet‐marker MeshFunction from the boundary XML file containing boundary tags:
     1=wall, 2=inlet, 3=outlet
     """
-    BC_file = mesh_path+BC_file_name
 
     # Create MeshFunction on facets (dim-1)
-    #sub_domains = MeshFunction("size_t", mesh, mesh.topology().dim()-1, mesh_path+BC_file_name)
-    sub_domains = MeshFunction("size_t", mesh, BC_file)
+    #sub_domains = MeshFunction("size_t", mesh, mesh.topology().dim()-1, mesh_path+BC_file)
+    sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file)
 
     return sub_domains
 
 
-def get_inflow_Vprofile(mesh, sub_domains, **NS_namespace):
+def get_inflow_Vprofile(center, area, **NS_namespace):
     
-    # Get diameter and centroid of the inlet
-    center, diameter = get_inlet_params(mesh, sub_domains) #[-21.6647, 16.2042, -29.5128]
-    
-    R = diameter/2
-    area = np.pi * R**2
+    # Get area and centroid of the inlet
+    #center, area = get_inlet_params(mesh, sub_domains) #[-21.6647, 16.2042, -29.5128]
+
+    #center = NS_parameters["inlet_centroid"]
+    #area = NS_parameters["inlet_area"]
+
+    diameter = sqrt(4*area/np.pi)
+    radius = diameter/2
     
     xc, yc, zc = center[0], center[1], center[2] 
-    
     
     # Total inlet flow rate
     Q_inflow = 1.43 * diameter**2.55 
@@ -186,14 +191,14 @@ def get_inflow_Vprofile(mesh, sub_domains, **NS_namespace):
     # max inlet velocity (based on Poiseuille flow)
     umax = 2*Q_inflow/area
 
-
     # Calculate distance of points from center
-    #radius = np.sqrt((x[1] - y_c)**2 + (x[2] - z_c)**2)
+    #r = np.sqrt((x[1] - y_c)**2 + (x[2] - z_c)**2)
 
     #Impose steady profile (Poiseuille parabola)
     uin_expr = ('umax*(1 - pow(sqrt((x[0]-xc)*(x[0]-xc) + (x[1]-yc)*(x[1]-yc) + (x[2]-zc)*(x[2]-zc))/R, 2) )')
-    inflow_Vprof = Expression(uin_expr, umax= umax, xc = xc, yc= yc, zc= zc, R= R, degree=2)
+    inflow_Vprof = Expression(uin_expr, umax= umax, xc = xc, yc= yc, zc= zc, R= radius, degree=2)
 
+    print('Q_inflow [m3/s] =', Q_inflow)
     return inflow_Vprof
 
 
