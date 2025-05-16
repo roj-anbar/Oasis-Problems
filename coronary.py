@@ -25,7 +25,6 @@ from dolfin import project, Function, XDMFFile
 # ---------------------------- Problem Setup -----------------------------#
 def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
-
     NS_parameters.update(
         nu= 0.0035, #[Pa.s]
         Re=1,
@@ -47,9 +46,9 @@ def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
 
     # Calculate inflow velocity profile
-    inflow_Vprof = get_inflow_Vprofile(NS_parameters['inlet_centroid'], NS_parameters['inlet_area'],)
+    #inflow_Vprof = get_inflow_Vprofile(NS_parameters['inlet_centroid'], NS_parameters['inlet_area'])
     # Update this in NS parameters and expression
-    NS_expressions.update(dict(u_in= inflow_Vprof)) 
+    #NS_expressions.update(dict(u_in= inflow_Vprof)) 
     
     # Placeholder for u_in
     #NS_expressions["u_in"] = Constant(0.0) 
@@ -115,17 +114,36 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
       • inlet  (tag 2)   → prescribe inlet velocity (u_in)
       • outlet (tag 3)   → p = 0
     """
-    wall_tag   = 1
-    inlet_tag  = 2
-    outlet_tag = 3
+    wall_tag, inlet_tag, outlet_tag = 1, 2, 3
 
-    sub_domains = get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
+    sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file) #get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
     
+    x   = SpatialCoordinate(mesh)
+    dsi = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains)
+
+    n_raw  = [assemble(FacetNormal(mesh)[i]*dsi) for i in range(3)]
+    n_len  = np.sqrt(sum(v*v for v in n_raw))
+    n_vec  = [v/n_len for v in n_raw]            # ← pure Python floats
+
     #inlet_diameter = NS_parameters['inlet_diameter']
     #inflow_Vprof = get_inflow_Vprofile(mesh, sub_domains)
     
     # Update these in NS parameters and expression
     #NS_expressions.update(dict(u_in= inflow_Vprof)) 
+
+    # The scalar magnitude of inlet velocity at each node
+    #uin_mag = NS_expressions["u_in"]
+    normal = FacetNormal(mesh)
+
+    center = NS_parameters["inlet_centroid"]
+    area = NS_parameters["inlet_area"]
+
+    uin = []
+    # build one component per axis
+    for ni in range(3):                                    
+        u_expr = PoiseuilleComponent(center, area, n_vec, ni)
+        uin.append(u_expr)
+    
 
     # Velocity BCs
     bcu = [[],[],[]]
@@ -135,9 +153,9 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     bcu_walls  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
 
     # 2. Inlet velocity (constant parabola)
-    bcux_inlet = DirichletBC(V, NS_expressions['u_in'], sub_domains, inlet_tag)
-    bcuy_inlet = DirichletBC(V, noslip, sub_domains, inlet_tag)
-    bcuz_inlet = DirichletBC(V, noslip, sub_domains, inlet_tag)
+    bcux_inlet = DirichletBC(V, uin[0], sub_domains, inlet_tag)
+    bcuy_inlet = DirichletBC(V, uin[1], sub_domains, inlet_tag)
+    bcuz_inlet = DirichletBC(V, uin[2], sub_domains, inlet_tag)
 
 
     # Combine both velocity BCs
@@ -156,20 +174,45 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
                 p = [bcp_outlet])    #Prescribed inlet, zero outlet
     
 
+class PoiseuilleComponent(UserExpression):
+    """Component u_i = -u_max (1 - (r/R)^2) * n_i.
 
-
-# Extract subdomains 
-def get_subdomains(mesh, mesh_path, BC_file, **NS_namespace):
+    * `u_max`  – centre-line velocity (scalar Constant)
+    * `center` – centre of inlet  (Point)
+    * `normal` – outward normal   (Point, unit length)
+    * `R`      – radius           (float)
+    * `ni`     – Cartesian normal component   (nx,ny,nz)
     """
-    Load the facet‐marker MeshFunction from the boundary XML file containing boundary tags:
-    1=wall, 2=inlet, 3=outlet
-    """
+    def __init__(self, center, area, normal, ni, **kwargs):
+        super().__init__(degree=2, **kwargs)
+        self.area = area
+        self.D = np.sqrt(4*self.area/np.pi)
+        self.R = self.D/2
+        self.Qin = 1.43 * self.D**2.55     # total inlet flow rate
+        self.u_max = 2*self.Qin/self.area   # max inlet velocity (based on Poiseuille flow)
 
-    # Create MeshFunction on facets (dim-1)
-    #sub_domains = MeshFunction("size_t", mesh, mesh.topology().dim()-1, mesh_path+BC_file)
-    sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file)
+        self.c0, self.c1, self.c2 = center
+        self.n0, self.n1, self.n2 = normal
+        self.ni = ni   # scalar value
 
-    return sub_domains
+    def eval(self, value, x):
+        # distance of point from center of inlet
+        dx = x[0] - self.c0
+        dy = x[1] - self.c1
+        dz = x[2] - self.c2
+
+        # projection length onto normal
+        dot = dx*self.n0 + dy*self.n1 + dz*self.n2
+
+        # in-plane distance squared
+        r2  = (dx - dot*self.n0)**2 + (dy - dot*self.n1)**2 + (dz - dot*self.n2)**2
+
+        # parabolic profile
+        profile = self.u_max * (1.0 - r2 / (self.R)**2)
+        value[0] = -self.ni * profile   # minus makes inflow
+
+    def value_shape(self):
+        return ()
 
 
 def get_inflow_Vprofile(center, area, **NS_namespace):
@@ -180,7 +223,7 @@ def get_inflow_Vprofile(center, area, **NS_namespace):
     #center = NS_parameters["inlet_centroid"]
     #area = NS_parameters["inlet_area"]
 
-    diameter = sqrt(4*area/np.pi)
+    diameter = np.sqrt(4*area/np.pi)
     radius = diameter/2
     
     xc, yc, zc = center[0], center[1], center[2] 
@@ -211,14 +254,14 @@ def get_inflow_Vprofile(center, area, **NS_namespace):
 def pre_solve_hook(mesh, u_, p_, AssignedVectorFunction, **NS_namespace):
     
     uv = AssignedVectorFunction(u_, "Velocity")
-    normals = FacetNormal(mesh)
+    #normals = FacetNormal(mesh)
 
     #return dict(uv= AssignedVectorFunction(u_, "Velocity"), n= FacetNormal(mesh))
-    return dict(uv=uv, normals=normals)
+    return dict(uv=uv) #, normals=normals)
 
 
 
-def start_timestep_hook(t, u_in, **NS_namespace): #originally it was P_in instead of u_in
+def start_timestep_hook(t, **NS_namespace): #originally it was P_in instead of u_in
    #u_in.t = t
    #P_in.t = t
    pass
@@ -230,7 +273,7 @@ def velocity_tentative_hook(**NS_namespace):
 
 
 # Called at each time-step
-def temporal_hook(u_, p_, mesh, tstep, uv, normals, print_intermediate_info, plot_interval, **NS_namespace):
+def temporal_hook(u_, p_, mesh, tstep, uv, print_intermediate_info, plot_interval, **NS_namespace):
     
     # I/O
     if tstep % print_intermediate_info == 0:
@@ -239,16 +282,15 @@ def temporal_hook(u_, p_, mesh, tstep, uv, normals, print_intermediate_info, plo
         print("pressure gradient: ", pinlet)
 
     if tstep % plot_interval == 0:
-        u_max = max(u_[0].vector().get_local().max(), u_[1].vector().get_local().max())
+        max_u = max(u_[0].vector().get_local().max(), u_[1].vector().get_local().max())
         #print("tstep= ", tstep, "and umax=", u_max)
-        print("tstep= ", tstep, ": worst Courant", NS_parameters['dt']*u_max/mesh.hmin())
+        print("tstep= ", tstep, ": worst Courant", NS_parameters['dt']*max_u/mesh.hmin())
 
 
 
 def theend_hook(uv, p_, **NS_namespace):
-    uv()
-    #plot(uv, title='Velocity')
-    #plot(p_, title='Pressure')
+    #uv()
+    pass
 
 
 
