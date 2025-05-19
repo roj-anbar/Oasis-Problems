@@ -20,7 +20,7 @@ import numpy as np
 import sys
 from ufl import dot, grad
 from dolfin import project, Function, XDMFFile
-
+#from dolfin import UserExpression, Expression, Mesh, MeshFunction, ds, assemble, Point
 
 # ---------------------------- Problem Setup -----------------------------#
 def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
@@ -118,12 +118,27 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
 
     sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file) #get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
     
-    x   = SpatialCoordinate(mesh)
-    dsi = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains)
+    dim = mesh.geometry().dim()
+    #x   = SpatialCoordinate(mesh)
 
-    n_raw  = [assemble(FacetNormal(mesh)[i]*dsi) for i in range(3)]
-    n_len  = np.sqrt(sum(v*v for v in n_raw))
-    n_vec  = [v/n_len for v in n_raw]            # ← pure Python floats
+
+    # Compute the area-weighted average normal
+
+    # Surface integrand over the inlet
+    ds_inlet = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains)
+
+    # Obtain raw normals
+    # n_raw[i]: i-th component (i = 0,1,2) of the unit outward normal vector on each boundary facet
+    n_raw = FacetNormal(mesh)
+
+    # Average the normals over the inlet
+    n_avg  = np.array([assemble(n_raw[i]*ds_inlet) for i in range(dim)])
+    
+    # Calculate the length of average normal components (~ inlet area) -> used for normalization
+    n_len  = np.sqrt(sum([n_avg[i]**2 for i in range(dim)]))
+
+    # Normalize average normals -> inlet_normal: unit vector representing the average outward normal of the inlet patch
+    inlet_normal  = n_avg/n_len
 
     #inlet_diameter = NS_parameters['inlet_diameter']
     #inflow_Vprof = get_inflow_Vprofile(mesh, sub_domains)
@@ -133,18 +148,12 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
 
     # The scalar magnitude of inlet velocity at each node
     #uin_mag = NS_expressions["u_in"]
-    normal = FacetNormal(mesh)
+    #normal = FacetNormal(mesh)
 
     center = NS_parameters["inlet_centroid"]
-    area = NS_parameters["inlet_area"]
+    area   = NS_parameters["inlet_area"]
 
-    uin = []
-    # build one component per axis
-    for ni in range(3):                                    
-        u_expr = PoiseuilleComponent(center, area, n_vec, ni)
-        uin.append(u_expr)
     
-
     # Velocity BCs
     bcu = [[],[],[]]
 
@@ -152,7 +161,21 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     noslip = Constant(0.0)
     bcu_walls  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
 
-    # 2. Inlet velocity (constant parabola)
+    # 2. Inlet velocity (Poiseuille parabola)
+
+    # Obtain inlet poiseuille velocity (one component per axis)
+    uin = []
+    for comp in range(dim):           
+        args = {
+            "center":           center,
+            "area":             area,
+            "normal":           inlet_normal,
+            "normal_component": inlet_normal[comp]}
+
+        u_expr = Poiseuille(args, degree = 2)
+        #u_expr.init({"center": center, "area": area, "normal": inlet_normal, "normal_component": inlet_normal[comp]})
+        uin.append(u_expr)
+    
     bcux_inlet = DirichletBC(V, uin[0], sub_domains, inlet_tag)
     bcuy_inlet = DirichletBC(V, uin[1], sub_domains, inlet_tag)
     bcuz_inlet = DirichletBC(V, uin[2], sub_domains, inlet_tag)
@@ -174,47 +197,57 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
                 p = [bcp_outlet])    #Prescribed inlet, zero outlet
     
 
-class PoiseuilleComponent(UserExpression):
+class Poiseuille(UserExpression):
     """Component u_i = -u_max (1 - (r/R)^2) * n_i.
 
-    * `u_max`  – centre-line velocity (scalar Constant)
-    * `center` – centre of inlet  (Point)
-    * `normal` – outward normal   (Point, unit length)
-    * `R`      – radius           (float)
-    * `ni`     – Cartesian normal component   (nx,ny,nz)
+    * `u_max`            – centre-line velocity (scalar Constant)
+    * `center`           – centre of inlet  (Point)
+    * `normal`           – outward normal   (Point, unit length)
+    * `R`                – radius           (float)
+    * `normal_component` – normal component (nx,ny,nz)
     """
-    def __init__(self, center, area, normal, ni, **kwargs):
-        super().__init__(degree=2, **kwargs)
-        self.area = area
-        self.D = np.sqrt(4*self.area/np.pi)
-        self.R = self.D/2
-        self.Qin = 1.43 * self.D**2.55     # total inlet flow rate
-        self.u_max = 2*self.Qin/self.area   # max inlet velocity (based on Poiseuille flow)
+    def __init__(self, args, degree):
+        super().__init__(degree=degree)
 
-        self.c0, self.c1, self.c2 = center
-        self.n0, self.n1, self.n2 = normal
-        self.ni = ni   # scalar value
+        self.center = Point(args["center"])
+        self.area   = float(args["area"])
+        self.R      = np.sqrt(self.area/np.pi)
+        self.Qin    = float(args.get("Q_in", 1.43 * (2*self.R)**2.55))     # total inlet flow rate
+        self.u_max  = 2.0 * self.Qin / self.area                           # max inlet velocity (based on Poiseuille flow)
+
+        self.normal = Point(args["normal"])       # (nx,ny,nz)
+        self.n_comp = float(args["normal_component"])
+        
+        self.c0, self.c1, self.c2 = self.center
+        self.n0, self.n1, self.n2 = self.normal
+  
 
     def eval(self, value, x):
         # distance of point from center of inlet
-        dx = x[0] - self.c0
-        dy = x[1] - self.c1
-        dz = x[2] - self.c2
+        dist_x = x[0] - self.c0
+        dist_y = x[1] - self.c1
+        dist_z = x[2] - self.c2
 
-        # projection length onto normal
-        dot = dx*self.n0 + dy*self.n1 + dz*self.n2
+        # Project distance onto normal -> divide dist vector to normal and in-plane components: dist = dist_inlet + dist_n
+        dist_n_len = dist_x*self.n0 + dist_y*self.n1 + dist_z*self.n2 # length of normal component of dist
+        
+        dist_n_x = dist_n_len*self.n0
+        dist_n_y = dist_n_len*self.n1
+        dist_n_z = dist_n_len*self.n2
 
-        # in-plane distance squared
-        r2  = (dx - dot*self.n0)**2 + (dy - dot*self.n1)**2 + (dz - dot*self.n2)**2
+        # In-plane distance squared
+        r2  = (dist_x - dist_n_x)**2 + (dist_y - dist_n_y)**2 + (dist_z - dist_n_z)**2
 
         # parabolic profile
-        profile = self.u_max * (1.0 - r2 / (self.R)**2)
-        value[0] = -self.ni * profile   # minus makes inflow
+        profile  = self.u_max * (1.0 - r2 / (self.R)**2)
+
+        # Value of inlet velocity in the specified direction
+        value[0] = -self.n_comp * profile   # minus makes inflow
 
     def value_shape(self):
         return ()
 
-
+"""
 def get_inflow_Vprofile(center, area, **NS_namespace):
     
     # Get area and centroid of the inlet
@@ -243,7 +276,7 @@ def get_inflow_Vprofile(center, area, **NS_namespace):
 
     print('Q_inflow [m3/s] =', Q_inflow)
     return inflow_Vprof
-
+"""
 
 
 
