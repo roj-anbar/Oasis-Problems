@@ -1,7 +1,7 @@
 """
 To solve the incompressible Navier-Stokes equations for 3D coronary cases (with mild and severe stenosis) using oasis.
 
-The mesh was provided from Torino group.
+The mesh was provided by the Torino group.
 Prescribed velocity boundary conditions due to venous inflow rates provided by Torino group.
 
 
@@ -20,22 +20,22 @@ import numpy as np
 import sys
 from ufl import dot, grad
 from dolfin import project, Function, XDMFFile
-#from dolfin import UserExpression, Expression, Mesh, MeshFunction, ds, assemble, Point
+#from dolfin import UserExpression, Expression
 
 # ---------------------------- Problem Setup -----------------------------#
 def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
     NS_parameters.update(
         nu= 0.0035, #[Pa.s]
-        Re=1,
+        #Re=1,
         period=1,
         dt=0.001, 
         inlet_area = 7.55527*1e-4, #[m2]
         inlet_centroid = [-0.216742, 0.161571, -0.29505], #center of mass [m]
         mesh_path='/scratch/s/steinman/ranbar/Torino/Coronary/mesh/',
-        mesh_name='MildStenosis_mesh.xml',
-        BC_file='MildStenosis_BCnodesFacets.xml',
-        save_step=10, #10,
+        mesh_name='MildStenosis_mesh_v4.xml',
+        BC_file='MildStenosis_BCnodesFacets_v4.xml',
+        save_step=1, #10,
         folder='results/',
 		linear_solver="mumps",
         checkpoint=100,
@@ -115,114 +115,118 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
       • outlet (tag 3)   → p = 0
     """
     wall_tag, inlet_tag, outlet_tag = 1, 2, 3
-
-    sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file) #get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
-    
     dim = mesh.geometry().dim()
     #x   = SpatialCoordinate(mesh)
 
+    #sub_domains = get_subdomains(mesh, mesh_path, BC_file, **NS_namespace)
+    sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file) 
+  
 
-    # Compute the area-weighted average normal
+    ### ------------------------ Sanity checks of boundaries ------------------------ ###
+    """
+    ds_wall = ds(wall_tag, domain=mesh, subdomain_data=sub_domains)
+    ds_outlet = ds(outlet_tag, domain=mesh, subdomain_data=sub_domains)
 
-    # Surface integrand over the inlet
-    ds_inlet = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains)
+    wall_ds = assemble(Constant(1.0)*ds_wall)
+    inlet_ds = assemble(Constant(1.0)*ds_inlet)
+    outlet_ds = assemble(Constant(1.0)*ds_outlet)
 
-    # Obtain raw normals
-    # n_raw[i]: i-th component (i = 0,1,2) of the unit outward normal vector on each boundary facet
-    n_raw = FacetNormal(mesh)
+    print("wall_ds = ", wall_ds)
+    print("inlet_ds = ", inlet_ds)
+    print("outlet_ds = ", outlet_ds)
+    print("inlet_normal = ", inlet_normal)
+    """
 
-    # Average the normals over the inlet
-    n_avg  = np.array([assemble(n_raw[i]*ds_inlet) for i in range(dim)])
-    
-    # Calculate the length of average normal components (~ inlet area) -> used for normalization
-    n_len  = np.sqrt(sum([n_avg[i]**2 for i in range(dim)]))
-
-    # Normalize average normals -> inlet_normal: unit vector representing the average outward normal of the inlet patch
-    inlet_normal  = n_avg/n_len
-
-    #inlet_diameter = NS_parameters['inlet_diameter']
-    #inflow_Vprof = get_inflow_Vprofile(mesh, sub_domains)
-    
-    # Update these in NS parameters and expression
-    #NS_expressions.update(dict(u_in= inflow_Vprof)) 
-
-    # The scalar magnitude of inlet velocity at each node
-    #uin_mag = NS_expressions["u_in"]
-    #normal = FacetNormal(mesh)
-
-    center = NS_parameters["inlet_centroid"]
-    area   = NS_parameters["inlet_area"]
-
-    
     # Velocity BCs
-    bcu = [[],[],[]]
 
     # 1. Noslip condition at wall  
     noslip = Constant(0.0)
-    bcu_walls  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
+    bcu_wall  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
 
     # 2. Inlet velocity (Poiseuille parabola)
 
-    # Obtain inlet poiseuille velocity (one component per axis)
-    uin = []
-    for comp in range(dim):           
-        args = {
-            "center":           center,
-            "area":             area,
-            "normal":           inlet_normal,
-            "normal_component": inlet_normal[comp]}
-
-        u_expr = Poiseuille(args, degree = 2)
-        #u_expr.init({"center": center, "area": area, "normal": inlet_normal, "normal_component": inlet_normal[comp]})
-        uin.append(u_expr)
+    center = NS_parameters["inlet_centroid"]
+    area   = NS_parameters["inlet_area"]
     
-    bcux_inlet = DirichletBC(V, uin[0], sub_domains, inlet_tag)
-    bcuy_inlet = DirichletBC(V, uin[1], sub_domains, inlet_tag)
-    bcuz_inlet = DirichletBC(V, uin[2], sub_domains, inlet_tag)
+    # Surface integrand over the inlet
+    ds_inlet = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains)
+    
+    # Inlet velocity profile
+    uin = make_poiseuille_bcs(mesh, ds_inlet)
+    
+    bcu =[[],[],[]]
+    #bci = DirichletBC(V, Constant(1.0), sub_domains, inlet_tag)
+    bci = [DirichletBC(V, ilt, sub_domains, inlet_tag) for ilt in uin]
+    for j in range(dim):
+        bcu[j].append(bci[j])
 
 
     # Combine both velocity BCs
-    bcu[0] = [bcu_walls, bcux_inlet]
-    bcu[1] = [bcu_walls, bcuy_inlet]
-    bcu[2] = [bcu_walls, bcuz_inlet]
+    
+    for bcui in bcu:
+        bcui.append(bcu_wall)
 
+    #bcu = [[],[],[]]
+    #bcu[0] = [bcu_wall, bcu_inlet[0]]
+    #bcu[1] = [bcu_wall, bcu_inlet[1]]
+    #bcu[2] = [bcu_wall, bcu_inlet[2]]
+    
 
     #Pressure BCs: Dirichlet for outlet pressure -> sets a reference pressure
     outflow = Constant(0.0) #Expression("p", p = 0, degree=pressure_degree)
     bcp_outlet = DirichletBC(Q, outflow, sub_domains, outlet_tag) 
 
-    return dict(u0= bcu[0],  #x-component of velocity -> 0 on the wall
-                u1= bcu[1],  #y-component of velocity -> 0 on wall and inlet
-                u2= bcu[2],  #z-component of velocity -> 0 on wall and inlet
-                p = [bcp_outlet])    #Prescribed inlet, zero outlet
     
+    # Sanity check
+    # 1. Check type of BCs
+    #bcs_dict = dict(u0= bcu[0], u1= bcu[1],u2= bcu[2], p = [bcp_outlet])
+    #for key, bc_list in bcs_dict.items():
+    #    print(key, [type(bc) for bc in (bc_list if isinstance(bc_list, (list,tuple)) else [bc_list])])
+
+    # 2. Check max velocity
+    u_center = np.array([u_expr(center) for u_expr in uin])
+    print("Centerline velocity = ", u_center)
+
+
+    print("Finished creating BCs ...")
+
+    return dict(u0= bcu[0],         #x-component of velocity 
+                u1= bcu[1],         #y-component of velocity 
+                u2= bcu[2],         #z-component of velocity 
+                p = [bcp_outlet])   #Prescribed inlet, zero outlet
+    
+
+
 
 class Poiseuille(UserExpression):
     """Component u_i = -u_max (1 - (r/R)^2) * n_i.
-
-    * `u_max`            – centre-line velocity (scalar Constant)
-    * `center`           – centre of inlet  (Point)
-    * `normal`           – outward normal   (Point, unit length)
-    * `R`                – radius           (float)
-    * `normal_component` – normal component (nx,ny,nz)
+    
+    * `R`                – radius               [m] (float)
+    * `center`           – centre of inlet      [m] (Point)
+    * `normal`           – outward normal       (Point, unit length)
+    * `normal_component` – normal component     (nx,ny,nz)
+    * `u_max`            – centre-line velocity [m/s] (scalar Constant)
     """
-    def __init__(self, args, degree):
-        super().__init__(degree=degree)
+    def __init__(self, *, center, area, normal, normal_component, degree=2, **kwargs):
+        super().__init__(degree=degree, **kwargs)
 
-        self.center = Point(args["center"])
-        self.area   = float(args["area"])
+        self.center = Point(center) #Point(*args["center"])
+        self.area   = float(area)
         self.R      = np.sqrt(self.area/np.pi)
-        self.Qin    = float(args.get("Q_in", 1.43 * (2*self.R)**2.55))     # total inlet flow rate
-        self.u_max  = 2.0 * self.Qin / self.area                           # max inlet velocity (based on Poiseuille flow)
+        self.Qin    = float(1.43 * (2*self.R)**2.55) #float(args.get("Q_in", 1.43 * (2*self.R)**2.55))   # total inlet flow rate [m3/s]
+        self.u_max  = 2.0 * self.Qin / self.area                         # max inlet velocity [m/s] (based on Poiseuille flow)
 
-        self.normal = Point(args["normal"])       # (nx,ny,nz)
-        self.n_comp = float(args["normal_component"])
+        self.normal = Point(*normal)           # (nx,ny,nz)
+        self.n_comp = float(normal_component)
         
         self.c0, self.c1, self.c2 = self.center
         self.n0, self.n1, self.n2 = self.normal
-  
+
+        #print('Q_in [ml/s] , u_max [m/s] =', self.Qin*1e6, self.u_max)
+
 
     def eval(self, value, x):
+  
         # distance of point from center of inlet
         dist_x = x[0] - self.c0
         dist_y = x[1] - self.c1
@@ -241,11 +245,87 @@ class Poiseuille(UserExpression):
         # parabolic profile
         profile  = self.u_max * (1.0 - r2 / (self.R)**2)
 
-        # Value of inlet velocity in the specified direction
-        value[0] = -self.n_comp * profile   # minus makes inflow
+        # Value of inlet velocity in the specified direction 
+        value[0] = -self.n_comp * profile   # minus makes inflow  
+        
+        #print('u_comp = ', value[0])
+        #print('Poiseuille is evaluated ...')
 
     def value_shape(self):
         return ()
+
+
+
+def make_poiseuille_bcs(mesh, ds_inlet, **NS_namespace):
+
+    dim = 3
+    center = NS_parameters["inlet_centroid"]
+    area   = NS_parameters["inlet_area"]
+
+    # ----------------------- Obtain inlet parameters ---------------------- #
+    
+    ### 1. Compute the area-weighted average normal ###
+
+    # Obtain raw normals
+    # n_raw[i]: i-th component (i = 0,1,2) of the unit outward normal vector on each boundary facet
+    n_raw = FacetNormal(mesh)
+
+    # Average the normals over the inlet
+    n_avg  = np.array([assemble(n_raw[i]*ds_inlet) for i in range(dim)])
+    
+    # Calculate the length of average normal components (~ inlet area) -> used for normalization
+    n_len  = np.sqrt(sum([n_avg[i]**2 for i in range(dim)]))
+
+    # Normalize average normals -> normal: unit vector representing the average outward normal of the inlet patch
+    normal  = n_avg/n_len
+
+
+    ### 2. Compute other parameters
+    n0, n1, n2 = normal[0], normal[1], normal[2]
+    c0, c1, c2 = center[0], center[1], center[2]
+    R = np.sqrt(area/np.pi)
+    Qin    = float(1.43 * (2*R)**2.55)
+    u_max  = 2.0 * Qin / area   
+
+    print ("Inlet properties: R = ", R, ", Qin = ", Qin, ", umax = ", u_max, ", centroid = ", center, ", normal = ", normal)
+
+
+    # -------------------- Create Expressions for each direction ------------------- #
+    # Obtain inlet poiseuille velocity (one component per axis)
+    uin_expressions = [[],[],[]]
+
+    """
+    for comp in range(3):           
+        args = {
+            "center":           center,
+            "area":             area,
+            "normal":           normal,
+            "normal_component": normal[comp]}
+
+        u_expr = Poiseuille(center=center, area=area, normal=normal, normal_component = normal[comp], degree = 2)
+        #u_expr = Poiseuille(args, degree = 2)
+        #u_expr.init({"center": center, "area": area, "normal": normal, "normal_component": normal[comp]})
+        uin_expressions[comp] = u_expr
+    """
+
+    kernel = (
+        "-ncomp * umax * (1.0 - "
+        "( pow((x[0]-c0) - (x[0]-c0)*n0, 2) + "
+        "  pow((x[1]-c1) - (x[1]-c1)*n1, 2) + "
+        "  pow((x[2]-c2) - (x[2]-c2)*n2, 2) ) "
+        " / (R*R) )"
+    )
+
+    for j in range(dim):      
+        #uin_expressions[0] = Expression("-ncomp * umax * (1 - (pow(x[0]-c0,2) + pow(x[1]-c1,2) + pow(x[2]-c2,2))/(R*R) )", ncomp = normal[0], umax=u_max, c0 = c0, c1=c1, c2=c2, R= R, degree = 2)
+        uin_expressions[j] = Expression(kernel, ncomp = normal[j], umax=u_max,
+                                        c0 = c0, c1=c1, c2=c2,
+                                        n0 = n0, n1=n1, n2=n2,
+                                        R= R, degree = 2)
+
+    return uin_expressions
+
+
 
 """
 def get_inflow_Vprofile(center, area, **NS_namespace):
@@ -277,9 +357,6 @@ def get_inflow_Vprofile(center, area, **NS_namespace):
     print('Q_inflow [m3/s] =', Q_inflow)
     return inflow_Vprof
 """
-
-
-
 
 
 # ---------------------------- Oasis Functions -----------------------------#
