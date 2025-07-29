@@ -20,6 +20,7 @@ source activate oasis
 
 # Navigate to the script directory
 cd $SLURM_SUBMIT_DIR
+mkdir logs
 
 # Set writable directories for caching
 export DIJITSO_CACHE_DIR=/scratch/s/steinman/ranbar/Coronary/scripts/.cache

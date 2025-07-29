@@ -26,15 +26,16 @@ from dolfin import project, Function, XDMFFile
 def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
     NS_parameters.update(
-        nu = 0.0035, #[Pa.s]
+        nu = 0.0035/1060, #[m2/s] #kinematic viscosity
+        rho = 1060,  #[kg/m3]
         #Re=1,
         period = 1,
-        dt = 0.01, 
-        inlet_area = 7.5708*1e-4, #7.55527*1e-4 #[m2] #obtained from Paraview
-        inlet_centroid = [-0.226278, 0.164909, -0.285813], #[-0.216742, 0.161571, -0.29505] #center of mass [m] #obtained from Paraview
+        dt = 0.0001, 
+        inlet_area = 7.5708*1e-6, #[m2] #obtained from Paraview
+        inlet_centroid = [-0.0226278, 0.0164909, -0.0285813],  #center of mass [m] #obtained from Paraview
         mesh_path = '/scratch/s/steinman/ranbar/Torino/Coronary/mesh/',
-        mesh_name = 'MildStenosis_New_mesh.xml', #'MildStenosis_mesh_v4.xml'
-        BC_file = 'MildStenosis_New_BCnodesFacets.xml', #'MildStenosis_BCnodesFacets_v4.xml'
+        mesh_name = 'MildStenosis_New_mesh.xml',        
+        BC_file = 'MildStenosis_New_BCnodesFacets.xml', 
         save_step = 1, #10,
         folder = 'results/',
 		linear_solver = "mumps",
@@ -129,7 +130,7 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     ds_wall   = ds(wall_tag, domain=mesh, subdomain_data=sub_domains)
     ds_outlet = ds(outlet_tag, domain=mesh, subdomain_data=sub_domains)
 
-    #"""
+    """
     wall_area   = assemble(Constant(1.0)*ds_wall)
     inlet_area  = assemble(Constant(1.0)*ds_inlet)
     outlet_area = assemble(Constant(1.0)*ds_outlet)
@@ -137,7 +138,7 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     print("wall_area = ", wall_area)
     print("inlet_area = ", inlet_area)
     print("outlet_area = ", outlet_area)
-    #"""
+    """
 
     # Velocity BCs
 
@@ -225,12 +226,18 @@ def make_poiseuille_bcs(mesh, ds_inlet, **NS_namespace):
     R = np.sqrt(area/np.pi)
     Qin    = float(1.43 * (2*R)**2.55)
     u_max  = 2.0 * Qin / area   
+    Reynolds = u_max*2*R/NS_parameters["nu"]
+    max_dt = 0.5*mesh.hmin()/u_max  # based on CFL = 0.5
+
+    print(f"Minimum mesh size [m] = {mesh.hmin():.8f}")
+    print(f"Suggested timestep [s]= {max_dt:0.6f}")
 
     print (f"Inlet properties: "
-           f"R = {R:.4f}, "
-           f"Qin = {Qin:.6f}, "
-           f"umax = {u_max:.4f}, "
-           f"centroid = {center}, "
+           f"R [m] = {R:.4f}, "
+           f"Q [ml/s] = {Qin*1e6:.4f}, "
+           f"umax [m/s] = {u_max:.4f}, "
+           f"Reynolds = {Reynolds:.1f}, "
+           #f"centroid = {center}, "
            f"normal = {normal}")
 
 
@@ -396,7 +403,7 @@ def temporal_hook(u_, p_, mesh, tstep, uv, print_intermediate_info, plot_interva
     if tstep % plot_interval == 0:
         max_u = max(u_[0].vector().get_local().max(), u_[1].vector().get_local().max())
         #print("tstep= ", tstep, "and umax=", u_max)
-        print("tstep= ", tstep, ": worst Courant", NS_parameters['dt']*max_u/mesh.hmin())
+        print("tstep= ", tstep, ": worst CFL", NS_parameters['dt']*max_u/mesh.hmin())
 
 
 
