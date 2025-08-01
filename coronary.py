@@ -26,36 +26,44 @@ from dolfin import project, Function, XDMFFile
 def problem_parameters(NS_parameters, NS_expressions, **NS_namespace):
 
     NS_parameters.update(
-        nu = 0.0035/1060, #[m2/s] #kinematic viscosity
-        rho = 1060,  #[kg/m3]
-        #Re=1,
-        period = 1,
-        dt = 0.0001, 
+
+        # Physical constants
+        nu = 1, #0.0035/1060, #[m2/s] #kinematic viscosity
+        period = 1, #[s]
+        dt = 0.0001, #[s]
         inlet_area = 7.5708*1e-6, #[m2] #obtained from Paraview
         inlet_centroid = [-0.0226278, 0.0164909, -0.0285813],  #center of mass [m] #obtained from Paraview
+
+        # Input parameters
         mesh_path = '/scratch/s/steinman/ranbar/Torino/Coronary/mesh/',
         mesh_name = 'MildStenosis_New_mesh.xml',        
         BC_file = 'MildStenosis_New_BCnodesFacets.xml', 
-        save_step = 1, #10,
+
+        # Output parameters
         folder = 'results/',
-		linear_solver = "mumps",
+        save_step = 10, #10,
         checkpoint = 100,
-        plot_interval = 200, #100,
+        #plot_interval = 200, #100,
         print_intermediate_info = 1e7,
         print_velocity_pressure_convergence = True,
-        use_krylov_solvers = True)
+        
+        # Solver parameters
+        linear_solver = "mumps",
+        use_krylov_solvers = True
+        #krylov_solvers = dict(
+        #    monitor_convergence = True,
+        #    report = True,
+        #    maximum_iterations = 200,
+        #    absolute_tolerance = 1e-6)
+        )
 
-    print("Starting simulations for dt = ", NS_parameters['dt'])
+    print("Starting simulations for dt = ", NS_parameters['dt'], '[s]')
 
     # Calculate inflow velocity profile
     #inflow_Vprof = get_inflow_Vprofile(NS_parameters['inlet_centroid'], NS_parameters['inlet_area'])
     # Update this in NS parameters and expression
     #NS_expressions.update(dict(u_in= inflow_Vprof)) 
     
-    # Placeholder for u_in
-    #NS_expressions["u_in"] = Constant(0.0) 
-
-
 
 
 # ---------------------------- Read mesh and obtain useful info -----------------------------#
@@ -68,6 +76,8 @@ def mesh(mesh_name, mesh_path, **NS_namespace):
     # to read .h5 mesh
     #h5   = HDF5File(mesh.mpi_comm(), mesh_path + mesh_name, "r")
     #h5.read(mesh, "/mesh", False)
+
+    print('Mesh min/max coords [mm]:', mesh.coordinates().min()*1000, mesh.coordinates().max()*1000)
 
     return mesh
 
@@ -124,61 +134,64 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     sub_domains = MeshFunction("size_t", mesh, mesh_path+BC_file) 
   
 
-    ### ------------------------ Sanity checks of boundaries ------------------------ ###
+    ### --------------- Sanity checks of boundaries ------------ ###
     # Surface integrand over the boundaries
-    ds_inlet  = ds(inlet_tag, domain=mesh, subdomain_data=sub_domains) # don't comment this line!!
-    ds_wall   = ds(wall_tag, domain=mesh, subdomain_data=sub_domains)
+    ds_inlet  = ds(inlet_tag,  domain=mesh, subdomain_data=sub_domains) # don't comment this line!!
+    ds_wall   = ds(wall_tag,   domain=mesh, subdomain_data=sub_domains)
     ds_outlet = ds(outlet_tag, domain=mesh, subdomain_data=sub_domains)
 
-    """
+    #center = NS_parameters["inlet_centroid"]
+    #area   = NS_parameters["inlet_area"]
+
+    #"""
     wall_area   = assemble(Constant(1.0)*ds_wall)
     inlet_area  = assemble(Constant(1.0)*ds_inlet)
     outlet_area = assemble(Constant(1.0)*ds_outlet)
 
-    print("wall_area = ", wall_area)
-    print("inlet_area = ", inlet_area)
-    print("outlet_area = ", outlet_area)
-    """
-
-    # Velocity BCs
-
-    # 1. Noslip condition at wall  
-    noslip = Constant(0.0)
-    bcu_wall  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
-
-    # 2. Inlet velocity (Poiseuille parabola)
-
-    center = NS_parameters["inlet_centroid"]
-    area   = NS_parameters["inlet_area"]
-
+    print("wall_area   [m2] = ", wall_area)
+    print("inlet_area  [m2] = ", inlet_area)
+    print("outlet_area [m2] = ", outlet_area)
+    #"""
     
-    # Inlet velocity profile
-    uin = make_poiseuille_bcs(mesh, ds_inlet)
-    
+   
+    ### --------------- Create BCs: Velocity ------------ ###
+
+    # Create an array to hold the velocity BC
     bcu =[[],[],[]]
+
+
+    ### 1. Inlet velocity (Poiseuille parabola)
+
+    # Prescribe poiseuille BC at inlet
+    uin = make_poiseuille_velocity(mesh, ds_inlet) #make inlet profile
     #bci = DirichletBC(V, Constant(1.0), sub_domains, inlet_tag)
     bci = [DirichletBC(V, ilt, sub_domains, inlet_tag) for ilt in uin]
+    
     for j in range(dim):
         bcu[j].append(bci[j])
 
 
-    # Combine both velocity BCs
-    
+    ### 2. Noslip condition at wall  
+    noslip = Constant(0.0)
+    bcu_wall  = DirichletBC(V, noslip, sub_domains, wall_tag) # this is for each velocity component (and it should hold for all 3 directions)
+
+    # Add no-slip BC at the wall for each velocity component   
     for bcui in bcu:
         bcui.append(bcu_wall)
+
 
     #bcu = [[],[],[]]
     #bcu[0] = [bcu_wall, bcu_inlet[0]]
     #bcu[1] = [bcu_wall, bcu_inlet[1]]
     #bcu[2] = [bcu_wall, bcu_inlet[2]]
     
-
+    ### --------------- Create BCs: Pressure ------------ ###
     #Pressure BCs: Dirichlet for outlet pressure -> sets a reference pressure
-    outflow = Constant(0.0) #Expression("p", p = 0, degree=pressure_degree)
+    outflow = Constant(0.0) #Expression("p", p = 0, degree=1)
     bcp_outlet = DirichletBC(Q, outflow, sub_domains, outlet_tag) 
 
     
-    # Sanity check
+    ### --------------- Sanity checks of the BC ------------ ###
     # 1. Check type of BCs
     #bcs_dict = dict(u0= bcu[0], u1= bcu[1],u2= bcu[2], p = [bcp_outlet])
     #for key, bc_list in bcs_dict.items():
@@ -188,6 +201,14 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
     #u_center = np.array([u_expr(center) for u_expr in uin])
     #print("Centerline velocity = ", u_center)
 
+    # 3. Check that all coefficients are finite
+    #for name, expr in zip(("u_x","u_y","u_z"), uin):
+    #    tmp = Function(V); tmp.interpolate(expr)
+    #    m, M = tmp.vector().min(), tmp.vector().max()
+    #    print(name, m, M, np.isfinite(m), np.isfinite(M))
+
+
+
     print("Finished creating BCs ...")
 
     return dict(u0= bcu[0],         #x-component of velocity 
@@ -196,7 +217,7 @@ def create_bcs(V, Q, mesh, mesh_path, BC_file, **NS_namespace):
                 p = [bcp_outlet])   #Prescribed inlet, zero outlet
     
 
-def make_poiseuille_bcs(mesh, ds_inlet, **NS_namespace):
+def make_poiseuille_velocity(mesh, ds_inlet, **NS_namespace):
 
     dim = 3
     center = NS_parameters["inlet_centroid"]
@@ -229,11 +250,11 @@ def make_poiseuille_bcs(mesh, ds_inlet, **NS_namespace):
     Reynolds = u_max*2*R/NS_parameters["nu"]
     max_dt = 0.5*mesh.hmin()/u_max  # based on CFL = 0.5
 
-    print(f"Minimum mesh size [m] = {mesh.hmin():.8f}")
-    print(f"Suggested timestep [s]= {max_dt:0.6f}")
+    print(f"Minimum mesh size [mm] = {mesh.hmin()*1000:.4f}")
+    print(f"Suggested timestep [s] = {max_dt:0.6f}")
 
     print (f"Inlet properties: "
-           f"R [m] = {R:.4f}, "
+           f"R [mm] = {R*1000:.4f}, "
            f"Q [ml/s] = {Qin*1e6:.4f}, "
            f"umax [m/s] = {u_max:.4f}, "
            f"Reynolds = {Reynolds:.1f}, "
