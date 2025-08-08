@@ -7,7 +7,7 @@
 
 # Requesting resources
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=40
+#SBATCH --ntasks-per-node=80
 #SBATCH --time=23:59:00
 
 # Export all environment vars
@@ -20,15 +20,14 @@ source activate oasis
 
 # Navigate to the script directory
 cd $SLURM_SUBMIT_DIR
-mkdir logs
 
 # Set writable directories for caching
-export DIJITSO_CACHE_DIR=/scratch/s/steinman/ranbar/Coronary/scripts/.cache
-export FFC_CACHE_DIR=/scratch/s/steinman/ranbar/Coronary/scripts/.ffc_cache
+export DIJITSO_CACHE_DIR=/scratch/s/steinman/ranbar/Torino/Coronary/scripts/.cache
+export FFC_CACHE_DIR=/scratch/s/steinman/ranbar/Torino/Coronary/scripts/.ffc_cache
     
 # Ensure the directories exist
 mkdir -p $DIJITSO_CACHE_DIR
 mkdir -p $FFC_CACHE_DIR
 
-mpirun -n 40 oasis NSfracStep problem=coronary
+mpirun -n 80 oasis NSfracStep problem=coronary
 #python ~/Oasis/oasis/run_oasis.py NSfracStep problem=coronary
