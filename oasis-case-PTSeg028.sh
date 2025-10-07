@@ -83,7 +83,7 @@ sbatch --export=ALL \
        --nodes=1 \
        --ntasks-per-node=$num_cores \
        --partition=$partition \
-       ./oasis-solver.sh "$@"
+       ./oasis-solver-PT.sh "$@"
 
 # Note: <./oasis-solver.sh "$@">
 # "$@" just includes any additional keyword arguments passed when you run this script.
