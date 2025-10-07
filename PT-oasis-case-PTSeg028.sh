@@ -1,6 +1,6 @@
 #!/bin/bash
 #-----------------------------------------------------------------------------------------------------------------------
-# oasis-case-casename.sh
+# PT-oasis-case-casename.sh
 # Case-specific launcher for Oasis CFD jobs on SLURM (Trillium style clusters).
 #
 # __author__ = Rojin Anbarafshan <rojin.anbar@gmail.com>
@@ -15,7 +15,7 @@
 #
 # EXECUTION:
 #   - Run this script from terminal by:
-#     <./oasis-case-casename.sh>
+#     <./PT-oasis-case-casename.sh>
 #
 # Adapted from solver-v2.sh written by 2022 Anna Haley (ahaley@mie.utoronto.ca) and solver.sh written by 2018 Mehdi Najafi (mnuoft@gmail.com). 
 # Copyright (C) 2025 University of Toronto, Biomedical Simulation Lab.
@@ -83,7 +83,7 @@ sbatch --export=ALL \
        --nodes=1 \
        --ntasks-per-node=$num_cores \
        --partition=$partition \
-       ./oasis-solver-PT.sh "$@"
+       ./PT-oasis-solver.sh "$@"
 
 # Note: <./oasis-solver.sh "$@">
 # "$@" just includes any additional keyword arguments passed when you run this script.

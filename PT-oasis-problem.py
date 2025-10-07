@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------------------------------------------------
-# oasis-problem-Vessel.py 
+# PT-oasis-problem.py 
 # This is the problem definition for Oasis/NSfracStep.py (patient-specific arteries/veins).
 #
 # __author__: Rojin Anbarafshan <rojin.anbar@gmail.com>
